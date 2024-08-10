@@ -2,7 +2,7 @@
 
 Welcome to the `algo-pinescript-libs` repository! This repository contains an algorithmic trading strategy written in TradingView's Pinescript language. The main strategy file is located at the root of the repository, while supporting files are stored in the `libs` folder.
 
-![Entry signal preview](https://assets.algoboy-kevin.com/pinescript-backtest-alert.png)
+![Entry signal preview](https://assets.algoboy-kevin.com/repo-entry-preview.png)
 
 ## How to Use
 
