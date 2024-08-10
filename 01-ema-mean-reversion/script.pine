@@ -1,0 +1,216 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © gambogam - Dual Ema Mean Reversion version 8.0
+// @version=5
+
+import gambogam/OrderEncoder/3 as JsonStr
+
+strategy("VT-Lite", 
+     overlay=false, 
+     currency=currency.USDT,
+     initial_capital=50, 
+     default_qty_type=strategy.percent_of_equity, 
+     default_qty_value=10, 
+     commission_type=strategy.commission.percent, 
+     commission_value=0.2,
+     pyramiding=99
+     )
+
+generateOrderName(float _sizePct, int _totalOrder) =>
+    tradeStr        = str.tostring(_totalOrder + strategy.opentrades + 1)
+    tradeName       = "L" + tradeStr + "-" + str.tostring(_sizePct, format = format.percent)
+
+calculateQty(float _sizePct, float _price, int _qtyPrecision, float _multiplier, float _minimum) =>
+    sizeUsdt        = strategy.equity * _sizePct / 100
+    orderSize       = math.round((sizeUsdt / _price), _qtyPrecision) * _multiplier
+    orderSize       := _minimum > orderSize ? _minimum : orderSize
+    
+
+isCd(int _lastEntryAt, int _lastExitAt, int _entryCd, int _exitCd) => 
+    isBuyCdPassed       = bar_index > _lastEntryAt + _entryCd
+    isExitCdPassed      = bar_index > _lastExitAt + _exitCd
+    isCdPassed          = isExitCdPassed and isBuyCdPassed
+
+var inputGroupTime          = "Backtest Time Period"
+var inputGroupBrokerSettings= "Broker settings"
+var inputGroupCoolDown      = "Cooldown settings"
+var inputGroupEntry         = "Entry settings"
+var inputGroupReentry       = "Re-entry settings"
+var inputGroupExit          = "Exit settings"
+var inputIndicatorSetting   = "ATR Bands settings"
+var inputLongTermSetting    = "Long term settings"
+var inputVolatilitySetting  = "Volatility settings"
+
+// Time filter
+i_useDateFilter     = input.bool(true, title="Begin Backtest at Start Date", group=inputGroupTime)
+i_backtestStartDate = input.time(timestamp("Jan 1 2023 00:00:00"), title="Start Date", group=inputGroupTime)
+
+// Trade settings
+i_AlertName         = input.string(title="AlertName", defval="DEFAULT", group = inputGroupBrokerSettings)
+i_PricePrecision    = input.int(title="Price precision", defval=7, group = inputGroupBrokerSettings)
+i_QtyPrecision      = input.int(title="Order qty precision", defval=2, group = inputGroupBrokerSettings)
+i_QtyMinimum        = input.float(title="Order qty minimum", defval=0, group = inputIndicatorSetting)
+
+
+//Indicator Setting
+i_EmaShortLength    = input.int(title="Short-term EMA Length", defval=60, group = inputIndicatorSetting)
+i_ATRPeriod         = input.int(title="ATR Period", defval=100, group = inputIndicatorSetting)
+i_ATRBand           = input.float(title="ATR Band Distance", defval=1, group = inputIndicatorSetting)
+i_ATRStretch        = input.float(title="ATR Buy Stretch", defval=1, group = inputIndicatorSetting)
+
+//Entry setup
+i_EmaVolLength      = input.int(title="Volatility EMA Length", defval=5, group = inputVolatilitySetting)
+i_VThreshold        = input.float(title="Volatility Threshold", defval=1.2, group = inputVolatilitySetting)
+
+//Entry 
+i_EntrySrc          = input.string(title="Entry Source", defval="ATR Bond", options=["Close", "Low", "ATR Bond"], group = inputGroupEntry)
+i_L1OrderSize       = input.float(title="Initial Order %", defval=45, group = inputGroupEntry)
+
+//Reentry
+i_ReentryMax        = input.int(title="Reentry Max Order", defval=1, group = inputGroupReentry)
+i_ReentryMultiplier = input.float(title="Reentry Multiplier", defval=2, group = inputGroupReentry)
+i_ReentryDiscount   = input.float(title="Reentry Discount", defval=20, group = inputGroupReentry)
+
+//Exit
+i_SellSrc           = input.source(title="Sell Price Source", defval=close, group = inputGroupExit)
+i_SellBand          = input.string(title="Sell Band", defval="Top", options=["Top2x", "Top", "Mid", "Bot"], group = inputGroupExit)
+i_SellVolatility    = input.bool(true, title="Wait til calm", group=inputGroupExit)
+
+//Cooldown Input
+i_EntryCd           = input.int(title="Entry cooldown", defval=10, group = inputGroupCoolDown)
+i_ExitCd            = input.int(title="Exit cooldown", defval=10, group = inputGroupCoolDown)
+
+// Get ATR Bands
+emaShortTerm    = ta.ema(close, i_EmaShortLength)
+atrValue        = ta.atr(i_ATRPeriod)
+atrBandTop      = emaShortTerm + (atrValue * i_ATRBand)
+atrBandTop2x    = emaShortTerm + (atrValue * i_ATRBand * 2)
+atrBandBot      = emaShortTerm - (atrValue * i_ATRBand)
+
+// Get Long Term SMA
+sellBand        = i_SellBand
+
+//EMA Volatility
+emaVol          = ta.ema(close, i_EmaVolLength)
+volatility      = emaVol - close > 0 ? (emaVol - close)/emaVol*100 : (emaVol - close)/emaVol*100
+
+// INIT VAR
+var string symbol = syminfo.basecurrency + "-USDT"
+var string message = ""
+var float price_limit   = na
+var int lastEntryAt     = bar_index - i_EntryCd
+var int lastExitAt      = bar_index - i_ExitCd
+var int lastFilledAt    = na
+var int totalOrder      = 0
+var int openLimits      = 0
+var int buyAtIndex      = na
+var bool isBuyCondition     = false
+var bool isSellCondition    = false
+var bool isCancelCondition  = false
+var bool alertBuy           = false
+var bool alertSell          = false
+var bool alertCancel        = false
+
+// Check if in trade windows
+inTradeWindow = not i_useDateFilter or time >= i_backtestStartDate
+
+if inTradeWindow
+    isBuyCondition      := false
+    isSellCondition     := false
+    isCancelCondition   := false
+    alertBuy            := false
+    alertSell           := false
+    alertCancel         := false
+
+    //BUY CONDITION HERE
+    if barstate.isconfirmed and openLimits < i_ReentryMax + 1
+        isCdPassed          = isCd(lastEntryAt, lastExitAt, i_EntryCd, i_ExitCd)
+        isBelowMax          = strategy.opentrades <= i_ReentryMax
+        isAboveThreshold    = volatility > i_VThreshold
+        isBelowMid          = close < atrBandBot
+        setupCondition      = (isCdPassed and isBelowMax and isAboveThreshold and isBelowMid)
+        isBuyCondition      := setupCondition 
+
+    //CANCEL CONDITION HERE
+    if barstate.isconfirmed and openLimits > 0 
+        isRaising           = close > atrBandBot
+        isNotEmpty          = strategy.opentrades > 0
+        isCancelCondition   := isRaising
+
+    //SELL CONDITION HERE
+    if  barstate.isconfirmed and strategy.opentrades > 0 
+        sellPrice           = switch sellBand
+            "Top2x"     => atrBandTop2x
+            "Top"       => atrBandTop
+            "Mid"       => emaShortTerm
+            "Bot"       => atrBandBot
+        isVolatilityOk      =  i_SellVolatility ? volatility >= 0 : true
+        isShortTermClose    =  i_SellSrc > sellPrice
+        isSellCondition     := isShortTermClose and isVolatilityOk
+
+
+// CANCEL_LIMIT
+if isCancelCondition
+    price_limit := na
+    openLimits  := 0
+    alertCancel := true
+    buyAtIndex  := na
+    message     := JsonStr.createCancelLimitMessage(i_AlertName, symbol, close)
+
+    alert(message, alert.freq_once_per_bar)
+    strategy.cancel_all()
+
+// OPEN_LIMIT
+if isBuyCondition
+    //Update global variables
+    lastEntryAt     := bar_index
+    buyAtIndex      := bar_index
+    openLimits      += 1
+    alertBuy        := true
+    
+    //POSITIONING
+    distance        = atrValue * i_ATRStretch
+    discountRate    = (100-i_ReentryDiscount)/100
+    discount        = math.pow(discountRate, strategy.opentrades)
+    entryPrice      = switch i_EntrySrc
+        "Close"       => close
+        "Low"         => low
+        "ATR Bond"    => atrBandBot
+    price_limit   := (entryPrice - (atrValue * i_ATRStretch)) * discount
+    price_limit   := math.round(price_limit, i_PricePrecision)
+
+    //SIZING
+    multiplier      = math.pow(i_ReentryMultiplier, strategy.opentrades)
+    orderSize       = calculateQty(i_L1OrderSize, price_limit, i_QtyPrecision, multiplier, i_QtyMinimum) 
+    tradeName       = generateOrderName(i_L1OrderSize, totalOrder)
+    message         := JsonStr.createLimitOrderMessage(i_AlertName, symbol, price_limit, orderSize)
+
+    alert(message, alert.freq_once_per_bar)
+    strategy.entry(tradeName, strategy.long, limit=price_limit, comment = tradeName, qty = orderSize)
+    
+// CLOSE_ALL
+if isSellCondition
+    //Update global variables
+    lastExitAt      := bar_index
+    buyAtIndex      := na
+    totalOrder      += strategy.opentrades
+    openLimits      := 0
+    alertSell       := true
+
+    message := JsonStr.createCloseAllMessage(i_AlertName, symbol, close)
+    
+    alert(message, alert.freq_once_per_bar)
+    strategy.cancel_all()
+    strategy.close_all()
+    
+// Draw data to chart
+plot(price_limit, "L1", color=color.new(color.teal, 5), style = plot.style_linebr, linewidth = 1, force_overlay = true)
+plotshape(alertBuy, "Alert Buy", style = shape.xcross, color = color.blue, location = location.bottom, force_overlay = true, size = size.small)
+plotshape(alertCancel, "Alert Cancel", style = shape.cross, color = color.yellow, location = location.bottom, force_overlay = true, size = size.small)
+plotshape(alertSell, "Alert Sell", style = shape.triangleup, color = color.red, location = location.bottom, force_overlay = true, size = size.small)
+
+plot(emaShortTerm, "ATR Band Middle", color.blue, force_overlay = true)
+plot(atrBandTop, "ATR Band Top", color=color.new(color.red, 10), force_overlay = true)
+plot(atrBandTop2x, "ATR Band Top 2x", color=color.new(color.red, 40), force_overlay = true)
+plot(atrBandBot, "ATR Band Bottom", color=color.yellow, force_overlay = true)
+plot(emaVol, "Volatility Band", color.green, force_overlay = true)
+plot(volatility, "Volatility", color=color.maroon, style = plot.style_histogram, linewidth = 2)

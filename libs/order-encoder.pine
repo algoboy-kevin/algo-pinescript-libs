@@ -1,0 +1,36 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © gambogam
+//@version=5
+// @description Library for JSON string formatting
+library("OrderEncoder",true)
+
+export createCancelLimitMessage(string _alertName, string _symbol, float _price) =>
+    // Convert the inputs into a formatted JSON string
+    jsonString = '{"alertName": ' + '\"' + _alertName + '\"'
+     + ', "type": "CANCEL_LIMIT"'
+     + ', "symbol": ' + '\"' + _symbol + '\"'
+     + ', "price": ' + str.tostring(_price) 
+     + '}'
+     
+    jsonString
+
+export createCloseAllMessage(string _alertName, string _symbol, float _price) =>
+    // Convert the inputs into a formatted JSON string
+    jsonString = '{"alertName": ' + '\"' + _alertName + '\"'
+     + ', "type": "CLOSE_ALL"'
+     + ', "symbol": ' + '\"' + _symbol + '\"'
+     + ', "price": ' + str.tostring(_price) 
+     + '}'
+     
+    jsonString
+
+export createLimitOrderMessage(string _alertName, string _symbol, float _price, float _quantity) =>
+    // Convert the inputs into a formatted JSON string
+    jsonString = '{"alertName": ' + '\"' + _alertName + '\"'
+     + ', "type": "OPEN_LIMIT"'
+     + ', "symbol": ' + '\"' + _symbol + '\"'
+     + ', "price": ' + str.tostring(_price) 
+     + ', "quantity": ' + str.tostring(_quantity)
+     + '}'
+     
+    jsonString
